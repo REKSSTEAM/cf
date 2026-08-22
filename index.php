@@ -1,156 +1,97 @@
 <?php
+declare(strict_types=1);
+
 /**
- * shows.st Multi-Source API — parallel requests
- * GET ?type=tv&id=94997&season=1&episode=1
- * GET ?type=movie&id=550
+ * AFVeo Admin front controller.
+ *
+ * هذا الملف هو نقطة الدخول الرئيسية عند رفع محتويات لوحة الإدارة إلى الاستضافة.
+ * يمرر الطلب إلى ملفات PHP الموجودة فعلياً، ويرفض أي مسار خارج مجلد اللوحة.
  */
 
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Cache-Control: no-store');
+$method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+$uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
 
-$type    = ($_GET['type'] ?? 'movie') === 'tv' ? 'tv' : 'movie';
-$id      = (int)($_GET['id'] ?? 0);
-$season  = (int)($_GET['season']  ?? 1);
-$episode = (int)($_GET['episode'] ?? 1);
+// إزالة مسار مجلد اللوحة من بداية الطلب عند الرفع داخل مجلد فرعي.
+$path = $uri;
+if ($scriptDir !== '' && $scriptDir !== '/' && str_starts_with($path, $scriptDir)) {
+    $path = substr($path, strlen($scriptDir));
+}
+$path = '/' . ltrim($path, '/');
+$path = rawurldecode($path);
 
-if (!$id) { echo json_encode(['ok'=>false,'error'=>'id مطلوب']); exit; }
-
-$all_sources = [
-    ['id'=>'moviebox',  'name'=>'MovieBox',  'params'=>['sources'=>'moviebox',  'hevc'=>'1']],
-    ['id'=>'moviebox2', 'name'=>'MovieBox2', 'params'=>['sources'=>'moviebox2', 'hevc'=>'1']],
-    ['id'=>'tcloud',    'name'=>'TCloud',    'params'=>['sources'=>'tcloud',    'sw'=>'1']],
-    ['id'=>'ipcloud',   'name'=>'IPCloud',   'params'=>['sources'=>'ipcloud',   'sw'=>'1']],
-    ['id'=>'cinefreak', 'name'=>'CineFreak', 'params'=>['sources'=>'cinefreak']],
-];
-
-$base_params = $type === 'tv'
-    ? ['id'=>$id,'season'=>$season,'episode'=>$episode,'mode'=>'json']
-    : ['id'=>$id,'mode'=>'json'];
-
-$req_headers = [
-    'User-Agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/137.0.0.0 Mobile Safari/537.36',
-    'Accept: application/json',
-    'Origin: https://player.vidlove.cc',
-    'Referer: https://player.vidlove.cc/',
-];
-
-$lang_map = [
-    'arabic'=>'ar','english'=>'en','french'=>'fr','spanish'=>'es','german'=>'de',
-    'turkish'=>'tr','persian'=>'fa','russian'=>'ru','italian'=>'it','portuguese'=>'pt',
-    'dutch'=>'nl','polish'=>'pl','czech'=>'cs','romanian'=>'ro','greek'=>'el',
-    'hebrew'=>'he','japanese'=>'ja','korean'=>'ko','chinese'=>'zh','indonesian'=>'id',
-    'malay'=>'ms','hindi'=>'hi','urdu'=>'ur','thai'=>'th','norwegian'=>'no',
-    'danish'=>'da','finnish'=>'fi','swedish'=>'sv','bulgarian'=>'bg','hungarian'=>'hu',
-    'vietnamese'=>'vi','tamil'=>'ta','bengali'=>'bn','serbian'=>'sr','croatian'=>'hr',
-    'filipino'=>'tl','tagalog'=>'tl','malayalam'=>'ml','telugu'=>'te',
-    'hausa'=>'ha','swahili'=>'sw','panjabi'=>'pa','slovenian'=>'sl','slovak'=>'sk',
-];
-
-// ── Parallel fetch بـ curl_multi ──────────────────────────────────────────────
-$mh      = curl_multi_init();
-$handles = [];
-
-foreach ($all_sources as $i => $src) {
-    $params = array_merge($base_params, $src['params']);
-    $url    = 'https://api.shows.st/' . $type . '?' . http_build_query($params);
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 15,
-        CURLOPT_HTTPHEADER     => $req_headers,
-        CURLOPT_ENCODING       => '',
-        CURLOPT_FOLLOWLOCATION => true,
-    ]);
-    curl_multi_add_handle($mh, $ch);
-    $handles[$i] = ['ch' => $ch, 'src' => $src];
+// حماية أساسية من traversal أو استدعاء ملفات خارج لوحة الإدارة.
+if (str_contains($path, "\0") || str_contains($path, '..')) {
+    respondNotFound();
 }
 
-// تشغيل كل الطلبات بالتوازي
-$running = null;
-do {
-    curl_multi_exec($mh, $running);
-    curl_multi_select($mh);
-} while ($running > 0);
+// المسارات العامة المختصرة.
+$routes = [
+    '/' => 'dashboard.php',
+    '/dashboard' => 'dashboard.php',
+    '/dashboard.php' => 'dashboard.php',
+    '/login' => 'login.php',
+    '/login.php' => 'login.php',
+    '/logout' => 'logout.php',
+    '/logout.php' => 'logout.php',
+];
 
-// ── جمع النتائج ──────────────────────────────────────────────────────────────
-$responses = [];
-foreach ($handles as $i => $h) {
-    $raw = curl_multi_getcontent($h['ch']);
-    curl_multi_remove_handle($mh, $h['ch']);
-    curl_close($h['ch']);
-    $data = $raw ? json_decode($raw, true) : null;
-    $responses[$i] = ['src' => $h['src'], 'data' => $data];
+// ملفات API تمرر كما هي، مثل /api/config.php و/api/heartbeat.php.
+$relative = ltrim($path, '/');
+if (str_starts_with($path, '/api/')) {
+    $target = __DIR__ . '/' . $relative;
+    dispatchPhp($target, $method);
 }
-curl_multi_close($mh);
 
-// ── Parse subtitles (من أول رد فيه subtitles) ────────────────────────────────
-$subtitles = [];
-foreach ($responses as $r) {
-    if (!empty($r['data']['subtitles'])) {
-        foreach ($r['data']['subtitles'] as $sub) {
-            $label = $sub['label'] ?? '';
-            $file  = $sub['file']  ?? '';
-            if (!$file || $label === 'Vylian') continue;
-            $lang  = 'unknown';
-            $lower = strtolower(preg_replace('/[\s0-9\(\)\-]+$/', '', $label));
-            foreach ($lang_map as $word => $code) {
-                if (str_contains($lower, $word)) { $lang = $code; break; }
-            }
-            $subtitles[$file] = ['label'=>$label,'language'=>$lang,'url'=>$file,'format'=>$sub['type']??'vtt'];
-        }
-        break; // الترجمات نفسها لكل المصادر
-    }
+if (isset($routes[$path])) {
+    dispatchPhp(__DIR__ . '/' . $routes[$path], $method);
 }
-$subtitles = array_values($subtitles);
-usort($subtitles, function($a,$b) {
-    $o=['ar'=>0,'en'=>1]; $oa=$o[$a['language']]??99; $ob=$o[$b['language']]??99;
-    return $oa!==$ob ? $oa-$ob : strcmp($a['label'],$b['label']);
-});
 
-// ── Parse sources ─────────────────────────────────────────────────────────────
-$sources = [];
-foreach ($responses as $r) {
-    $src  = $r['src'];
-    $data = $r['data'];
-    if (!$data) continue;
+// السماح بملف PHP محدد موجود فعلياً، مع منع المسارات المتداخلة غير الضرورية.
+if (preg_match('#^/[A-Za-z0-9_-]+\\.php$#', $path) === 1) {
+    dispatchPhp(__DIR__ . '/' . ltrim($path, '/'), $method);
+}
 
-    $source   = $data['source'] ?? [];
-    $qualities = [];
+respondNotFound();
 
-    if (!empty($source['qualities'])) {
-        foreach ($source['qualities'] as $q) {
-            if (empty($q['url'])) continue;
-            $qualities[] = [
-                'label' => $q['quality'] ?? 'HD',
-                'url'   => $q['url'],
-                'type'  => $q['type']   ?? 'mp4',
-                'codec' => $q['codec']  ?? '',
-            ];
-        }
-    } elseif (!empty($source['url'])) {
-        $qualities[] = [
-            'label' => $source['label'] ?? 'Auto',
-            'url'   => $source['url'],
-            'type'  => 'hls',
-        ];
+function dispatchPhp(string $target, string $method): never
+{
+    $realBase = realpath(__DIR__);
+    $realTarget = is_file($target) ? realpath($target) : false;
+
+    if ($realBase === false || $realTarget === false || !str_starts_with($realTarget, $realBase . DIRECTORY_SEPARATOR)) {
+        respondNotFound();
     }
 
-    $sources[] = [
-        'id'        => $src['id'],
-        'name'      => $src['name'],
-        'ok'        => !empty($qualities),
-        'type'      => !empty($qualities) ? ($qualities[0]['type'] ?? 'hls') : null,
-        'qualities' => $qualities,
-        'error'     => empty($qualities) ? 'No sources' : null,
+    // لا نسمح بتشغيل ملفات إعدادات أو SQL عبر المتصفح.
+    $blocked = [
+        DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR,
+        '.sql',
+        'README.md',
     ];
+    foreach ($blocked as $part) {
+        if (str_contains($realTarget, $part)) {
+            respondNotFound();
+        }
+    }
+
+    require $realTarget;
+    exit;
 }
 
-echo json_encode([
-    'ok'            => !empty(array_filter($sources, fn($s) => $s['ok'])),
-    'provider'      => 'shows.st',
-    'sources'       => $sources,
-    'subtitles'     => $subtitles,
-    'subtitle_count'=> count($subtitles),
-], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+function respondNotFound(): never
+{
+    $isApi = str_contains($_SERVER['REQUEST_URI'] ?? '', '/api/');
+    http_response_code(404);
+    if ($isApi) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok' => false,
+            'error' => 'route_not_found',
+        ], JSON_UNESCAPED_UNICODE);
+    } else {
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>AFVeo Admin</title><p>الصفحة غير موجودة.</p>';
+    }
+    exit;
+}
