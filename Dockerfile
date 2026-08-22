@@ -1,12 +1,18 @@
-FROM ghcr.io/puppeteer/puppeteer:latest
+FROM php:8.2-apache
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+RUN docker-php-ext-install pdo_mysql \
+    && a2enmod rewrite
 
-WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
-COPY index.js ./
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 
-EXPOSE 3000
-CMD ["node", "index.js"]
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+    /etc/apache2/sites-available/*.conf \
+    /etc/apache2/apache2.conf \
+    /etc/apache2/conf-available/*.conf
+
+COPY . /var/www/html/
+
+RUN cp /var/www/html/index.php /var/www/html/public/index.php \
+    && chown -R www-data:www-data /var/www/html
+
+EXPOSE 80

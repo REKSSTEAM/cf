@@ -27,9 +27,9 @@ if (str_contains($path, "\0") || str_contains($path, '..')) {
 
 // المسارات العامة المختصرة.
 $routes = [
-    '/' => 'dashboard.php',
-    '/dashboard' => 'dashboard.php',
-    '/dashboard.php' => 'dashboard.php',
+    '/' => 'admin/index.php',
+    '/dashboard' => 'admin/index.php',
+    '/dashboard.php' => 'admin/index.php',
     '/login' => 'login.php',
     '/login.php' => 'login.php',
     '/logout' => 'logout.php',
@@ -39,8 +39,8 @@ $routes = [
 // ملفات API تمرر كما هي، مثل /api/config.php و/api/heartbeat.php.
 $relative = ltrim($path, '/');
 if (str_starts_with($path, '/api/')) {
-    $target = __DIR__ . '/' . $relative;
-    dispatchPhp($target, $method);
+        $target = __DIR__ . '/' . $relative;
+        dispatchPhp($target, $method);
 }
 
 if (isset($routes[$path])) {
